@@ -46,7 +46,7 @@ async function saveSubmissions(arr) {
      - text fields like: name, description, latitude, longitude (optional)
      - file field: image (single)
 */
-app.post('/submitData', upload.single('image'), async (req, res) => {
+app.post('/submitData', upload.single('file'), async (req, res) => {
   try {
     const { body, file } = req;
 
