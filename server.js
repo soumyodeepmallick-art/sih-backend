@@ -46,7 +46,7 @@ async function saveSubmissions(arr) {
      - text fields like: name, description, latitude, longitude (optional)
      - file field: image (single)
 */
-app.post('/submitData', upload.single('file'), async (req, res) => {
+app.post('/submitData', upload.single("file"), async (req, res) => {
   try {
     const { body, file } = req;
 
@@ -55,7 +55,7 @@ app.post('/submitData', upload.single('file'), async (req, res) => {
       return res.status(400).json({ error: 'Missing required field: description' });
     }
     if (!file) {
-      return res.status(400).json({ error: 'Missing image file (field name must be "image")' });
+      return res.status(400).json({ error: 'Missing image file (field name must be "file")' });
     }
 
     // Build FormData for Pinata
