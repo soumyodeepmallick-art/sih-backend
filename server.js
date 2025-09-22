@@ -12,10 +12,7 @@ const app = express();
 const PORT = process.env.PORT || 4000;
 
 // Allow frontend requests
-const cors = require("cors");
 
-// Allow all origins (for testing)
-// In production, restrict to your frontend domain
 app.use(
   cors({
     origin: "*", // or ["http://localhost:5173", "https://your-frontend-domain.com"]
