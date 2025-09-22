@@ -1,4 +1,3 @@
-// server.js
 require("dotenv").config();
 const express = require("express");
 const multer = require("multer");
@@ -12,7 +11,8 @@ const { v4: uuidv4 } = require("uuid");
 const app = express();
 const PORT = process.env.PORT || 4000;
 
-app.use(cors());
+// Allow frontend requests
+app.use(cors({ origin: ["http://localhost:5173"] }));
 app.use(express.json());
 
 // File where we persist submissions
@@ -39,10 +39,15 @@ async function saveSubmissions(arr) {
   await fs.writeFile(DB_FILE, JSON.stringify(arr, null, 2), "utf8");
 }
 
-/* ---------- POST /submitData ---------- 
-   Frontend form uploads: name, description, latitude, longitude, image
+/* ---------- POST /api/submissions ---------- 
+   FormData fields:
+   - applicantAddress (string)
+   - name (string)
+   - description (string)
+   - latitude, longitude (optional)
+   - file (image)
 */
-app.post("/submitData", upload.single("image"), async (req, res) => {
+app.post("/api/submissions", upload.single("file"), async (req, res) => {
   try {
     const { body, file } = req;
 
@@ -54,7 +59,7 @@ app.post("/submitData", upload.single("image"), async (req, res) => {
     if (!file) {
       return res
         .status(400)
-        .json({ error: 'Missing image file (field name must be "image")' });
+        .json({ error: 'Missing file (field name must be "file")' });
     }
 
     // Build FormData for Pinata
@@ -122,7 +127,7 @@ app.post("/submitData", upload.single("image"), async (req, res) => {
 
     return res.status(201).json({ success: true, submission });
   } catch (err) {
-    console.error("Error /submitData:", err?.response?.data || err.message);
+    console.error("Error /api/submissions:", err?.response?.data || err.message);
     return res.status(500).json({ error: "Server error", details: err.message });
   }
 });
@@ -145,8 +150,19 @@ app.get("/api/submissions/:id/metadata", async (req, res) => {
     const sub = submissions.find((s) => s.id === req.params.id);
     if (!sub) return res.status(404).json({ error: "Not found" });
 
-    // Metadata URI (can be imageUrl or a JSON metadata if you extend this)
-    return res.json({ metadataURI: sub.imageUrl });
+    // NFT Metadata JSON
+    const metadata = {
+      name: sub.title || "Untitled Submission",
+      description: sub.description || "",
+      image: sub.imageUrl,
+      attributes: [
+        { trait_type: "Applicant Address", value: sub.applicantAddress },
+        { trait_type: "Latitude", value: sub.latitude },
+        { trait_type: "Longitude", value: sub.longitude },
+      ],
+    };
+
+    return res.json(metadata);
   } catch (err) {
     console.error("Error /api/submissions/:id/metadata:", err);
     return res.status(500).json({ error: "Error fetching metadata" });
