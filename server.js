@@ -144,6 +144,7 @@ app.get("/api/submissions", async (req, res) => {
 });
 
 /* ---------- GET /api/submissions/:id/metadata ---------- */
+/* ---------- GET /api/submissions/:id/metadata ---------- */
 app.get("/api/submissions/:id/metadata", async (req, res) => {
   try {
     const submissions = await loadSubmissions();
@@ -155,6 +156,7 @@ app.get("/api/submissions/:id/metadata", async (req, res) => {
       name: sub.title || "Untitled Submission",
       description: sub.description || "",
       image: sub.imageUrl,
+      metadataURI: sub.imageUrl, // <-- added this line for frontend
       attributes: [
         { trait_type: "Applicant Address", value: sub.applicantAddress },
         { trait_type: "Latitude", value: sub.latitude },
@@ -168,6 +170,7 @@ app.get("/api/submissions/:id/metadata", async (req, res) => {
     return res.status(500).json({ error: "Error fetching metadata" });
   }
 });
+
 
 /* ---------- POST /api/submissions/:id/minted ---------- */
 app.post("/api/submissions/:id/minted", async (req, res) => {
