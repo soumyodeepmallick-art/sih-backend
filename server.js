@@ -3,74 +3,48 @@ const express = require("express");
 const multer = require("multer");
 const axios = require("axios");
 const FormData = require("form-data");
-const fs = require("fs").promises;
-const path = require("path");
 const cors = require("cors");
 const { v4: uuidv4 } = require("uuid");
+const { createClient } = require("@supabase/supabase-js");
 
 const app = express();
 const PORT = process.env.PORT || 4000;
 
-// Allow frontend requests
+// Supabase client
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_KEY
+);
 
+// Allow frontend requests
 app.use(
   cors({
-    origin: "*", // or ["http://localhost:5173", "https://your-frontend-domain.com"]
+    origin: "*", // tighten later for security
     methods: ["GET", "POST", "PUT", "DELETE"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
-
 app.use(express.json());
 
-// File where we persist submissions
-const DB_FILE = path.join(__dirname, "submissions.json");
-
-// Multer configuration: keep file in memory
+// Multer config
 const storage = multer.memoryStorage();
 const upload = multer({
   storage,
   limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
 });
 
-/* ---------- Helpers ---------- */
-async function loadSubmissions() {
-  try {
-    const data = await fs.readFile(DB_FILE, "utf8");
-    return JSON.parse(data);
-  } catch (err) {
-    if (err.code === "ENOENT") return [];
-    throw err;
-  }
-}
-async function saveSubmissions(arr) {
-  await fs.writeFile(DB_FILE, JSON.stringify(arr, null, 2), "utf8");
-}
-
-/* ---------- POST /api/submissions ---------- 
-   FormData fields:
-   - applicantAddress (string)
-   - name (string)
-   - description (string)
-   - latitude, longitude (optional)
-   - file (image)
-*/
+/* ---------- POST /api/submissions ---------- */
 app.post("/api/submissions", upload.single("file"), async (req, res) => {
   try {
     const { body, file } = req;
-
-    if (!body || !body.description) {
-      return res
-        .status(400)
-        .json({ error: "Missing required field: description" });
+    if (!body?.description) {
+      return res.status(400).json({ error: "Missing description" });
     }
     if (!file) {
-      return res
-        .status(400)
-        .json({ error: 'Missing file (field name must be "file")' });
+      return res.status(400).json({ error: "Missing file (field name 'file')" });
     }
 
-    // Build FormData for Pinata
+    // Upload file to Pinata
     const form = new FormData();
     form.append("file", file.buffer, {
       filename: file.originalname,
@@ -80,20 +54,10 @@ app.post("/api/submissions", upload.single("file"), async (req, res) => {
 
     const meta = {
       name: file.originalname,
-      keyvalues: {
-        uploader: body.name || "anonymous",
-        description: body.description || "",
-      },
+      keyvalues: { uploader: body.name || "anonymous", description: body.description || "" },
     };
     form.append("pinataMetadata", JSON.stringify(meta));
     form.append("pinataOptions", JSON.stringify({ cidVersion: 1 }));
-
-    const pinataJwt = process.env.PINATA_JWT;
-    if (!pinataJwt) {
-      return res
-        .status(500)
-        .json({ error: "Pinata JWT not configured on server" });
-    }
 
     const pinataResp = await axios.post(
       "https://api.pinata.cloud/pinning/pinFileToIPFS",
@@ -101,7 +65,7 @@ app.post("/api/submissions", upload.single("file"), async (req, res) => {
       {
         headers: {
           ...form.getHeaders(),
-          Authorization: `Bearer ${pinataJwt}`,
+          Authorization: `Bearer ${process.env.PINATA_JWT}`,
         },
         maxContentLength: Infinity,
         maxBodyLength: Infinity,
@@ -109,15 +73,14 @@ app.post("/api/submissions", upload.single("file"), async (req, res) => {
     );
 
     const ipfsHash = pinataResp.data?.IpfsHash;
-    const ipfsUrl = ipfsHash
-      ? `https://gateway.pinata.cloud/ipfs/${ipfsHash}`
-      : null;
+    const ipfsUrl = ipfsHash ? `https://gateway.pinata.cloud/ipfs/${ipfsHash}` : null;
 
+    // Build submission object
     const submission = {
       id: uuidv4(),
       applicantAddress: body.applicantAddress || null,
       title: body.name || null,
-      description: body.description || null,
+      description: body.description,
       latitude: body.latitude || null,
       longitude: body.longitude || null,
       ipfsHash,
@@ -129,13 +92,13 @@ app.post("/api/submissions", upload.single("file"), async (req, res) => {
       status: "pending",
     };
 
-    const submissions = await loadSubmissions();
-    submissions.push(submission);
-    await saveSubmissions(submissions);
+    // Insert into Supabase
+    const { error } = await supabase.from("submissions").insert([submission]);
+    if (error) throw error;
 
     return res.status(201).json({ success: true, submission });
   } catch (err) {
-    console.error("Error /api/submissions:", err?.response?.data || err.message);
+    console.error("Error /api/submissions:", err.message);
     return res.status(500).json({ error: "Server error", details: err.message });
   }
 });
@@ -143,63 +106,54 @@ app.post("/api/submissions", upload.single("file"), async (req, res) => {
 /* ---------- GET /api/submissions ---------- */
 app.get("/api/submissions", async (req, res) => {
   try {
-    const submissions = await loadSubmissions();
-    return res.json(submissions);
+    const { data, error } = await supabase.from("submissions").select("*").order("createdAt", { ascending: false });
+    if (error) throw error;
+    return res.json(data);
   } catch (err) {
-    console.error("Error /api/submissions:", err);
-    return res.status(500).json({ error: "Failed to read submissions" });
+    console.error("Error /api/submissions:", err.message);
+    return res.status(500).json({ error: "Failed to fetch submissions" });
   }
 });
 
-/* ---------- GET /api/submissions/:id/metadata ---------- */
 /* ---------- GET /api/submissions/:id/metadata ---------- */
 app.get("/api/submissions/:id/metadata", async (req, res) => {
   try {
-    const submissions = await loadSubmissions();
-    const sub = submissions.find((s) => s.id === req.params.id);
-    if (!sub) return res.status(404).json({ error: "Not found" });
+    const { data, error } = await supabase.from("submissions").select("*").eq("id", req.params.id).single();
+    if (error) return res.status(404).json({ error: "Not found" });
 
-    // NFT Metadata JSON
     const metadata = {
-      name: sub.title || "Untitled Submission",
-      description: sub.description || "",
-      image: sub.imageUrl,
-      metadataURI: sub.imageUrl, // <-- added this line for frontend
+      name: data.title || "Untitled Submission",
+      description: data.description || "",
+      image: data.imageUrl,
+      metadataURI: data.imageUrl,
       attributes: [
-        { trait_type: "Applicant Address", value: sub.applicantAddress },
-        { trait_type: "Latitude", value: sub.latitude },
-        { trait_type: "Longitude", value: sub.longitude },
+        { trait_type: "Applicant Address", value: data.applicantAddress },
+        { trait_type: "Latitude", value: data.latitude },
+        { trait_type: "Longitude", value: data.longitude },
       ],
     };
-
     return res.json(metadata);
   } catch (err) {
-    console.error("Error /api/submissions/:id/metadata:", err);
+    console.error("Error metadata:", err.message);
     return res.status(500).json({ error: "Error fetching metadata" });
   }
 });
-
 
 /* ---------- POST /api/submissions/:id/minted ---------- */
 app.post("/api/submissions/:id/minted", async (req, res) => {
   try {
     const { txHash, tokenId, metadataURI } = req.body;
-    const submissions = await loadSubmissions();
-    const idx = submissions.findIndex((s) => s.id === req.params.id);
-    if (idx === -1) return res.status(404).json({ error: "Not found" });
+    const { data, error } = await supabase
+      .from("submissions")
+      .update({ status: "approved", txHash, tokenId, metadataURI })
+      .eq("id", req.params.id)
+      .select()
+      .single();
 
-    submissions[idx] = {
-      ...submissions[idx],
-      status: "approved",
-      txHash,
-      tokenId,
-      metadataURI,
-    };
-
-    await saveSubmissions(submissions);
-    res.json({ success: true, submission: submissions[idx] });
+    if (error) throw error;
+    res.json({ success: true, submission: data });
   } catch (err) {
-    console.error("Error /api/submissions/:id/minted:", err);
+    console.error("Error minted:", err.message);
     res.status(500).json({ error: "Failed to mark minted" });
   }
 });
